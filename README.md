@@ -4,6 +4,8 @@ BarPin 是一款“气泡承载”菜单栏工具：它把常用 App 的窗口�
 
 Slogan：把常用 App 固定在菜单栏气泡里。
 
+![BarPin 截图](assets/barpin-screenshot.png)
+
 ## 行为概览
 
 - 默认控制系统自带的「日历」App（Calendar）。
