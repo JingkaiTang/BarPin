@@ -7,7 +7,8 @@ VERSION="${VERSION:-0.1.0}"
 BUILD="${BUILD:-1}"
 OUT_DIR="${OUT_DIR:-dist}"
 DMG_NAME="${DMG_NAME:-${APP_NAME}-${VERSION}.dmg}"
-BUILD_DIR="$(mktemp -d /tmp/barpin-build.XXXXXX)"
+BUILD_DIR_ARM="$(mktemp -d /tmp/barpin-build-arm.XXXXXX)"
+BUILD_DIR_X64="$(mktemp -d /tmp/barpin-build-x64.XXXXXX)"
 DMG_DIR="${OUT_DIR}/dmg"
 ICON_DIR="${OUT_DIR}/icon"
 ICON_PNG="${ICON_DIR}/AppIcon.png"
@@ -15,15 +16,17 @@ ICONSET="${ICON_DIR}/AppIcon.iconset"
 ICON_ICNS="${OUT_DIR}/AppIcon.icns"
 
 cleanup() {
-  rm -rf "${BUILD_DIR}" "${DMG_DIR}" "${ICON_DIR}"
+  rm -rf "${BUILD_DIR_ARM}" "${BUILD_DIR_X64}" "${DMG_DIR}" "${ICON_DIR}"
 }
 trap cleanup EXIT
 
 mkdir -p "${OUT_DIR}"
 
-# Build release binary
+# Build universal binary (arm64 + x86_64)
 CLANG_MODULE_CACHE_PATH=/tmp/clang-module-cache TMPDIR=/tmp \
-  swift build -c release --build-path "${BUILD_DIR}" --disable-sandbox
+  swift build -c release --arch arm64 --build-path "${BUILD_DIR_ARM}" --disable-sandbox
+CLANG_MODULE_CACHE_PATH=/tmp/clang-module-cache TMPDIR=/tmp \
+  swift build -c release --arch x86_64 --build-path "${BUILD_DIR_X64}" --disable-sandbox
 
 # Build app icon
 mkdir -p "${ICON_DIR}"
@@ -47,7 +50,11 @@ APP_PATH="${OUT_DIR}/${APP_NAME}.app"
 rm -rf "${APP_PATH}"
 mkdir -p "${APP_PATH}/Contents/MacOS" "${APP_PATH}/Contents/Resources"
 
-cp "${BUILD_DIR}/arm64-apple-macosx/release/${APP_NAME}" "${APP_PATH}/Contents/MacOS/${APP_NAME}"
+ARM_BIN="${BUILD_DIR_ARM}/arm64-apple-macosx/release/${APP_NAME}"
+X64_BIN="${BUILD_DIR_X64}/x86_64-apple-macosx/release/${APP_NAME}"
+UNIVERSAL_BIN="${APP_PATH}/Contents/MacOS/${APP_NAME}"
+
+lipo -create "${ARM_BIN}" "${X64_BIN}" -output "${UNIVERSAL_BIN}"
 cp "${ICON_ICNS}" "${APP_PATH}/Contents/Resources/AppIcon.icns"
 
 cat <<PLIST > "${APP_PATH}/Contents/Info.plist"
@@ -84,6 +91,9 @@ cat <<PLIST > "${APP_PATH}/Contents/Info.plist"
 </dict>
 </plist>
 PLIST
+
+# Ad-hoc sign to reduce "damaged" warnings (still not notarized)
+codesign --force --deep --sign - "${APP_PATH}"
 
 # Create DMG source folder
 rm -rf "${DMG_DIR}"
