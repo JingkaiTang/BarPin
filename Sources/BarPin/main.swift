@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 
 private enum DefaultsKeys {
     static let targetAppPath = "targetAppPath"
@@ -9,6 +10,8 @@ private enum DefaultsKeys {
     static let useTemplateIcon = "useTemplateIcon"
     static let debugPlacement = "debugPlacement"
     static let uiLanguage = "uiLanguage"
+    static let hotKeyKeyCode = "hotKeyKeyCode"
+    static let hotKeyModifiers = "hotKeyModifiers"
 }
 
 private struct TargetApp {
@@ -20,6 +23,119 @@ private struct TargetApp {
 private enum UILanguage: String {
     case english = "en"
     case chinese = "zh"
+}
+
+private struct HotKeySetting {
+    let keyCode: UInt32
+    let modifiers: UInt32
+}
+
+private final class HotKeyCaptureWindowDelegate: NSObject, NSWindowDelegate {
+    private let onClose: () -> Void
+
+    init(onClose: @escaping () -> Void) {
+        self.onClose = onClose
+        super.init()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose()
+    }
+}
+
+private final class HotKeyCaptureView: NSView {
+    private let titleLabel: NSTextField
+    private let hintLabel: NSTextField
+    private let helpLabel: NSTextField
+    private let invalidHint: String
+    private let formatter: (HotKeySetting) -> String
+    private let modifierMapper: (NSEvent.ModifierFlags) -> UInt32
+    private let validator: (HotKeySetting) -> Bool
+    private let onCapture: (HotKeySetting?) -> Void
+
+    init(frame: CGRect,
+         title: String,
+         hint: String,
+         help: String,
+         invalidHint: String,
+         formatter: @escaping (HotKeySetting) -> String,
+         modifierMapper: @escaping (NSEvent.ModifierFlags) -> UInt32,
+         validator: @escaping (HotKeySetting) -> Bool,
+         onCapture: @escaping (HotKeySetting?) -> Void) {
+        self.titleLabel = NSTextField(labelWithString: title)
+        self.hintLabel = NSTextField(labelWithString: hint)
+        self.helpLabel = NSTextField(labelWithString: help)
+        self.invalidHint = invalidHint
+        self.formatter = formatter
+        self.modifierMapper = modifierMapper
+        self.validator = validator
+        self.onCapture = onCapture
+        super.init(frame: frame)
+
+        titleLabel.font = NSFont.boldSystemFont(ofSize: 14)
+        hintLabel.font = NSFont.systemFont(ofSize: 13)
+        helpLabel.font = NSFont.systemFont(ofSize: 12)
+        helpLabel.textColor = .secondaryLabelColor
+
+        let stack = NSStackView(views: [titleLabel, hintLabel, helpLabel])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 20),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        return nil
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == UInt16(kVK_Escape) {
+            onCapture(nil)
+            return
+        }
+        if isModifierKey(event.keyCode) {
+            return
+        }
+        let modifiers = modifierMapper(event.modifierFlags)
+        let setting = HotKeySetting(keyCode: UInt32(event.keyCode), modifiers: modifiers)
+        if !validator(setting) {
+            hintLabel.stringValue = invalidHint
+            NSSound.beep()
+            return
+        }
+        hintLabel.stringValue = formatter(setting)
+        onCapture(setting)
+    }
+
+    private func isModifierKey(_ keyCode: UInt16) -> Bool {
+        switch Int(keyCode) {
+        case kVK_Command, kVK_Shift, kVK_Option, kVK_Control,
+             kVK_RightCommand, kVK_RightShift, kVK_RightOption, kVK_RightControl,
+             kVK_Function:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+private extension String {
+    var fourCharCode: OSType {
+        var result: OSType = 0
+        for scalar in utf8 {
+            result = (result << 8) + OSType(scalar)
+        }
+        return result
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -37,6 +153,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var iconStyleItem: NSMenuItem!
     private var languageItem: NSMenuItem!
     private var debugLogsItem: NSMenuItem!
+    private var hotKeyInfoItem: NSMenuItem!
+    private var setHotKeyItem: NSMenuItem!
+    private var resetHotKeyItem: NSMenuItem!
     private var resetWindowSizeItem: NSMenuItem!
     private var quitItem: NSMenuItem!
     private var axObserver: AXObserver?
@@ -47,12 +166,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var originalStatusImage: NSImage?
     private var launchingTimer: Timer?
     private var launchingDotCount = 0
+    private var hotKeyRef: EventHotKeyRef?
+    private var hotKeyHandler: EventHandlerRef?
+    private let hotKeyID = EventHotKeyID(signature: "BRPN".fourCharCode, id: 1)
+    private var hotKeyCaptureDelegate: HotKeyCaptureWindowDelegate?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
         ensureAccessibilityPermission()
         ensureDefaultTargetApp()
         observeAppTermination()
+        registerHotKey()
     }
 
     @objc private func statusItemClicked(_ sender: Any?) {
@@ -120,6 +244,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateMenuStates()
     }
 
+    @objc private func setHotKey(_ sender: Any?) {
+        guard let setting = captureHotKeySetting() else {
+            return
+        }
+        saveHotKeySetting(setting)
+        registerHotKey(showError: true)
+        updateMenuStates()
+    }
+
+    @objc private func resetHotKey(_ sender: Any?) {
+        let setting = defaultHotKeySetting()
+        saveHotKeySetting(setting)
+        registerHotKey()
+        updateMenuStates()
+    }
+
     @objc private func quitApp(_ sender: Any?) {
         NSApp.terminate(nil)
     }
@@ -139,6 +279,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         iconStyleItem = NSMenuItem(title: "", action: #selector(toggleTemplateIcon), keyEquivalent: "")
         languageItem = NSMenuItem(title: "", action: #selector(toggleLanguage), keyEquivalent: "")
         debugLogsItem = NSMenuItem(title: "", action: #selector(toggleDebugLogs), keyEquivalent: "")
+        hotKeyInfoItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        setHotKeyItem = NSMenuItem(title: "", action: #selector(setHotKey), keyEquivalent: "")
+        resetHotKeyItem = NSMenuItem(title: "", action: #selector(resetHotKey), keyEquivalent: "")
         resetWindowSizeItem = NSMenuItem(title: "", action: #selector(resetWindowPosition), keyEquivalent: "")
         quitItem = NSMenuItem(title: "", action: #selector(quitApp), keyEquivalent: "q")
 
@@ -147,6 +290,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenu.addItem(iconStyleItem)
         statusMenu.addItem(languageItem)
         statusMenu.addItem(debugLogsItem)
+        statusMenu.addItem(NSMenuItem.separator())
+        statusMenu.addItem(hotKeyInfoItem)
+        statusMenu.addItem(setHotKeyItem)
+        statusMenu.addItem(resetHotKeyItem)
         statusMenu.addItem(NSMenuItem.separator())
         statusMenu.addItem(resetWindowSizeItem)
         statusMenu.addItem(NSMenuItem.separator())
@@ -181,6 +328,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if defaults.object(forKey: DefaultsKeys.uiLanguage) == nil {
             defaults.set(defaultLanguage().rawValue, forKey: DefaultsKeys.uiLanguage)
+        }
+        if defaults.object(forKey: DefaultsKeys.hotKeyKeyCode) == nil ||
+            defaults.object(forKey: DefaultsKeys.hotKeyModifiers) == nil {
+            let setting = defaultHotKeySetting()
+            saveHotKeySetting(setting)
         }
         if defaults.string(forKey: DefaultsKeys.targetAppBundleId) != nil {
             updateStatusItemAppearance()
@@ -257,6 +409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let useAppIcon = defaults.bool(forKey: DefaultsKeys.useAppIcon)
         let useGrayIcon = defaults.bool(forKey: DefaultsKeys.useTemplateIcon)
         let debugEnabled = defaults.bool(forKey: DefaultsKeys.debugPlacement)
+        let hotKeyText = hotKeyDisplayString(currentHotKeySetting())
         chooseAppItem.title = localizedString(en: "Choose App...", zh: "选择应用...")
         useAppIconItem.title = localizedString(en: "Use App Icon", zh: "使用应用图标")
         iconStyleItem.title = useGrayIcon
@@ -266,6 +419,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ? localizedString(en: "Language: English", zh: "语言：英文")
             : localizedString(en: "Language: Chinese", zh: "语言：中文")
         debugLogsItem.title = localizedString(en: "Debug Logs", zh: "调试日志")
+        hotKeyInfoItem.title = localizedString(en: "Hotkey: \(hotKeyText)", zh: "快捷键：\(hotKeyText)")
+        setHotKeyItem.title = localizedString(en: "Set Hotkey...", zh: "设置快捷键...")
+        resetHotKeyItem.title = localizedString(en: "Reset Hotkey", zh: "重置快捷键")
         resetWindowSizeItem.title = localizedString(en: "Reset Window Size", zh: "重置窗口大小")
         quitItem.title = localizedString(en: "Quit", zh: "退出")
 
@@ -273,6 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         iconStyleItem.state = .on
         iconStyleItem.isEnabled = useAppIcon
         debugLogsItem.state = debugEnabled ? .on : .off
+        hotKeyInfoItem.isEnabled = false
     }
 
     private func localizedString(en: String, zh: String) -> String {
@@ -289,6 +446,238 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .chinese
         }
         return .english
+    }
+
+    private func defaultHotKeySetting() -> HotKeySetting {
+        HotKeySetting(keyCode: UInt32(kVK_ANSI_B), modifiers: UInt32(cmdKey | optionKey))
+    }
+
+    private func currentHotKeySetting() -> HotKeySetting {
+        let defaults = UserDefaults.standard
+        if let keyCode = defaults.object(forKey: DefaultsKeys.hotKeyKeyCode) as? Int,
+           let modifiers = defaults.object(forKey: DefaultsKeys.hotKeyModifiers) as? Int {
+            return HotKeySetting(keyCode: UInt32(keyCode), modifiers: UInt32(modifiers))
+        }
+        return defaultHotKeySetting()
+    }
+
+    private func saveHotKeySetting(_ setting: HotKeySetting) {
+        let defaults = UserDefaults.standard
+        defaults.set(Int(setting.keyCode), forKey: DefaultsKeys.hotKeyKeyCode)
+        defaults.set(Int(setting.modifiers), forKey: DefaultsKeys.hotKeyModifiers)
+    }
+
+    private func registerHotKey(showError: Bool = false) {
+        unregisterHotKey()
+        installHotKeyHandlerIfNeeded()
+        let setting = currentHotKeySetting()
+        var newHotKeyRef: EventHotKeyRef?
+        let status = RegisterEventHotKey(setting.keyCode, setting.modifiers, hotKeyID, GetApplicationEventTarget(), 0, &newHotKeyRef)
+        if status == noErr {
+            hotKeyRef = newHotKeyRef
+        } else {
+            NSLog("Register hotkey failed: \(status)")
+            if showError {
+                showAlert(
+                    title: localizedString(en: "Hotkey Unavailable", zh: "快捷键不可用"),
+                    message: localizedString(
+                        en: "This shortcut is already in use. Please choose another one.",
+                        zh: "该快捷键已被占用，请更换其他组合。"
+                    )
+                )
+            }
+        }
+    }
+
+    private func unregisterHotKey() {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+        }
+        hotKeyRef = nil
+    }
+
+    private func installHotKeyHandlerIfNeeded() {
+        guard hotKeyHandler == nil else { return }
+        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        let status = InstallEventHandler(
+            GetApplicationEventTarget(),
+            AppDelegate.hotKeyEventHandler,
+            1,
+            &eventType,
+            UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()),
+            &hotKeyHandler
+        )
+        if status != noErr {
+            NSLog("Install hotkey handler failed: \(status)")
+        }
+    }
+
+    private func handleHotKeyEvent(_ eventId: EventHotKeyID) {
+        guard eventId.signature == hotKeyID.signature, eventId.id == hotKeyID.id else {
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.toggleAppWindow()
+        }
+    }
+
+    private func hotKeyDisplayString(_ setting: HotKeySetting) -> String {
+        var parts: [String] = []
+        if setting.modifiers & UInt32(controlKey) != 0 {
+            parts.append("⌃")
+        }
+        if setting.modifiers & UInt32(optionKey) != 0 {
+            parts.append("⌥")
+        }
+        if setting.modifiers & UInt32(shiftKey) != 0 {
+            parts.append("⇧")
+        }
+        if setting.modifiers & UInt32(cmdKey) != 0 {
+            parts.append("⌘")
+        }
+        parts.append(keyString(for: setting.keyCode))
+        return parts.joined()
+    }
+
+    private func keyString(for keyCode: UInt32) -> String {
+        switch keyCode {
+        case UInt32(kVK_ANSI_A): return "A"
+        case UInt32(kVK_ANSI_B): return "B"
+        case UInt32(kVK_ANSI_C): return "C"
+        case UInt32(kVK_ANSI_D): return "D"
+        case UInt32(kVK_ANSI_E): return "E"
+        case UInt32(kVK_ANSI_F): return "F"
+        case UInt32(kVK_ANSI_G): return "G"
+        case UInt32(kVK_ANSI_H): return "H"
+        case UInt32(kVK_ANSI_I): return "I"
+        case UInt32(kVK_ANSI_J): return "J"
+        case UInt32(kVK_ANSI_K): return "K"
+        case UInt32(kVK_ANSI_L): return "L"
+        case UInt32(kVK_ANSI_M): return "M"
+        case UInt32(kVK_ANSI_N): return "N"
+        case UInt32(kVK_ANSI_O): return "O"
+        case UInt32(kVK_ANSI_P): return "P"
+        case UInt32(kVK_ANSI_Q): return "Q"
+        case UInt32(kVK_ANSI_R): return "R"
+        case UInt32(kVK_ANSI_S): return "S"
+        case UInt32(kVK_ANSI_T): return "T"
+        case UInt32(kVK_ANSI_U): return "U"
+        case UInt32(kVK_ANSI_V): return "V"
+        case UInt32(kVK_ANSI_W): return "W"
+        case UInt32(kVK_ANSI_X): return "X"
+        case UInt32(kVK_ANSI_Y): return "Y"
+        case UInt32(kVK_ANSI_Z): return "Z"
+        case UInt32(kVK_ANSI_0): return "0"
+        case UInt32(kVK_ANSI_1): return "1"
+        case UInt32(kVK_ANSI_2): return "2"
+        case UInt32(kVK_ANSI_3): return "3"
+        case UInt32(kVK_ANSI_4): return "4"
+        case UInt32(kVK_ANSI_5): return "5"
+        case UInt32(kVK_ANSI_6): return "6"
+        case UInt32(kVK_ANSI_7): return "7"
+        case UInt32(kVK_ANSI_8): return "8"
+        case UInt32(kVK_ANSI_9): return "9"
+        case UInt32(kVK_Space): return "Space"
+        case UInt32(kVK_Tab): return "Tab"
+        case UInt32(kVK_Escape): return "Esc"
+        default: return "Key\(keyCode)"
+        }
+    }
+
+    private func captureHotKeySetting() -> HotKeySetting? {
+        let current = hotKeyDisplayString(currentHotKeySetting())
+        let title = localizedString(en: "Press a new shortcut", zh: "按下新的快捷键")
+        let hint = localizedString(en: "Current: \(current)", zh: "当前：\(current)")
+        let help = localizedString(en: "Press Esc to cancel.", zh: "按 Esc 取消。")
+        let invalidHint = localizedString(en: "Include ⌘ / ⌥ / ⌃", zh: "请包含 ⌘ / ⌥ / ⌃")
+
+        var captured: HotKeySetting?
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 140),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        panel.level = .floating
+        panel.title = localizedString(en: "Set Hotkey", zh: "设置快捷键")
+        panel.isReleasedWhenClosed = false
+        centerPanel(panel)
+
+        let delegate = HotKeyCaptureWindowDelegate { [weak self] in
+            captured = nil
+            panel.orderOut(nil)
+            NSApp.stopModal()
+            self?.hotKeyCaptureDelegate = nil
+        }
+        hotKeyCaptureDelegate = delegate
+        panel.delegate = delegate
+
+        let view = HotKeyCaptureView(
+            frame: panel.contentView?.bounds ?? .zero,
+            title: title,
+            hint: hint,
+            help: help,
+            invalidHint: invalidHint,
+            formatter: { [weak self] setting in
+                self?.hotKeyDisplayString(setting) ?? ""
+            },
+            modifierMapper: { flags in
+                var mods: UInt32 = 0
+                if flags.contains(.command) { mods |= UInt32(cmdKey) }
+                if flags.contains(.option) { mods |= UInt32(optionKey) }
+                if flags.contains(.control) { mods |= UInt32(controlKey) }
+                if flags.contains(.shift) { mods |= UInt32(shiftKey) }
+                return mods
+            },
+            validator: { setting in
+                let required = UInt32(cmdKey | optionKey | controlKey)
+                return (setting.modifiers & required) != 0
+            },
+            onCapture: { [weak self] setting in
+                captured = setting
+                NSApp.stopModal()
+                panel.orderOut(nil)
+                self?.hotKeyCaptureDelegate = nil
+            }
+        )
+        panel.contentView = view
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(view)
+        NSApp.runModal(for: panel)
+        return captured
+    }
+
+    private func centerPanel(_ panel: NSPanel) {
+        let targetScreen = statusItem.button?.window?.screen ?? NSScreen.main
+        let frame = targetScreen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 800, height: 600)
+        let size = panel.frame.size
+        let origin = CGPoint(
+            x: frame.midX - size.width / 2,
+            y: frame.midY - size.height / 2
+        )
+        panel.setFrameOrigin(origin)
+    }
+
+    private static let hotKeyEventHandler: EventHandlerUPP = { _, event, userData in
+        guard let event, let userData else {
+            return noErr
+        }
+        var hotKeyID = EventHotKeyID()
+        let status = GetEventParameter(
+            event,
+            EventParamName(kEventParamDirectObject),
+            EventParamType(typeEventHotKeyID),
+            nil,
+            MemoryLayout<EventHotKeyID>.size,
+            nil,
+            &hotKeyID
+        )
+        if status == noErr {
+            let delegate = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
+            delegate.handleHotKeyEvent(hotKeyID)
+        }
+        return noErr
     }
 
     private func statusIcon(for url: URL, useGray: Bool) -> NSImage {
