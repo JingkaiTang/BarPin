@@ -732,8 +732,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let running = NSRunningApplication.runningApplications(withBundleIdentifier: target.bundleId).first {
             if !running.isHidden {
-                // If the app has no windows (e.g. user closed the last window), don't hide it.
-                if appHasWindows(pid: running.processIdentifier) {
+                // Keep toggle behavior only when target app is already frontmost.
+                // If it is visible but in background, bring it to front instead of hiding it.
+                if appHasWindows(pid: running.processIdentifier) && isAppFrontmost(running) {
                     running.hide()
                     return
                 }
@@ -875,6 +876,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return !windows.isEmpty
         }
         return false
+    }
+
+    private func isAppFrontmost(_ app: NSRunningApplication) -> Bool {
+        guard let frontmost = NSWorkspace.shared.frontmostApplication else {
+            return app.isActive
+        }
+        return frontmost.processIdentifier == app.processIdentifier
     }
 
     private func isUsableWindow(_ window: AXUIElement) -> Bool {
