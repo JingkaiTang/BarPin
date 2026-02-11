@@ -284,6 +284,7 @@ private final class PinRuntime {
                         }
                         let frame = self.desiredWindowFrame(for: target)
                         self.setWindowFrame(reopenedWindow, frame: frame)
+                        self.retryAlignWindowToStatusItem(reopenedWindow, target: target)
                         runningApp.activate(options: [.activateIgnoringOtherApps])
                         self.startObserving(window: reopenedWindow, pid: runningApp.processIdentifier, bundleId: target.bundleId)
                     }
@@ -293,6 +294,7 @@ private final class PinRuntime {
                 self.endLaunchingUI(targetName: target.displayName)
                 let frame = self.desiredWindowFrame(for: target)
                 self.setWindowFrame(window, frame: frame)
+                self.retryAlignWindowToStatusItem(window, target: target)
                 runningApp.activate(options: [.activateIgnoringOtherApps])
                 self.startObserving(window: window, pid: runningApp.processIdentifier, bundleId: target.bundleId)
             }
@@ -616,10 +618,11 @@ private final class PinRuntime {
               let buttonWindow = button.window,
               let screen = buttonWindow.screen else {
             if owner.debugPlacement {
-                NSLog("Placement fallback: missing button/screen. Using centered frame.")
+                NSLog("Placement fallback: missing button/screen. Using menu-bar fallback frame.")
             }
-            let fallback = centeredFrame(size: size, screen: NSScreen.main)
-            let axFallback = convertFrameToAX(fallback, screen: NSScreen.main)
+            let fallback = fallbackMenuBarFrame(size: size)
+            let targetScreen = screenContaining(point: CGPoint(x: fallback.midX, y: fallback.midY)) ?? NSScreen.main
+            let axFallback = convertFrameToAX(fallback, screen: targetScreen)
             return axFallback
         }
 
@@ -637,6 +640,25 @@ private final class PinRuntime {
             NSLog("  target frame (ax): \(NSStringFromRect(axFrame))")
         }
         return axFrame
+    }
+
+    private func fallbackMenuBarFrame(size: CGSize) -> CGRect {
+        let mouse = NSEvent.mouseLocation
+        let screen = screenContaining(point: mouse) ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? CGRect(x: 0, y: 0, width: 800, height: 600)
+        let padding: CGFloat = 12
+        var x = visible.maxX - size.width - padding
+        var y = visible.maxY - size.height - 8
+        if x < visible.minX { x = visible.minX }
+        if y < visible.minY { y = visible.minY }
+        return CGRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
+    private func screenContaining(point: CGPoint) -> NSScreen? {
+        for screen in NSScreen.screens where screen.frame.contains(point) {
+            return screen
+        }
+        return nil
     }
 
     private func centeredFrame(size: CGSize, screen: NSScreen?) -> CGRect {
@@ -700,6 +722,14 @@ private final class PinRuntime {
                     _ = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, posValue)
                 }
             }
+        }
+    }
+
+    private func retryAlignWindowToStatusItem(_ window: AXUIElement, target: TargetApp) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self else { return }
+            let desired = self.desiredWindowFrame(for: target)
+            self.setWindowFrame(window, frame: desired)
         }
     }
 
