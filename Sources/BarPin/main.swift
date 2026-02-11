@@ -883,6 +883,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var manageClearHotKeyButton: NSButton?
     private var manageToggleIconButton: NSButton?
     private var manageToggleStyleButton: NSButton?
+    private var reopenHandlerInstalled = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         ensureDefaults()
@@ -893,6 +894,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reconcileRuntimes()
         ensureAccessibilityPermission()
         observeAppTermination()
+        installReopenEventHandlerIfNeeded()
         installHotKeyHandlerIfNeeded()
         _ = registerAllHotKeys(showError: false)
 
@@ -982,10 +984,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func openManagePins(_ sender: Any?) {
-        buildManageWindowIfNeeded()
-        reloadManageWindow(preferredProfileID: profileID(from: sender))
-        NSApp.activate(ignoringOtherApps: true)
-        manageWindow?.makeKeyAndOrderFront(nil)
+        showManageWindow(preferredProfileID: profileID(from: sender))
     }
 
     @objc func pinMenuToggleUseAppIcon(_ sender: Any?) {
@@ -1595,6 +1594,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return .english
     }
 
+    private func showManageWindow(preferredProfileID: String?) {
+        buildManageWindowIfNeeded()
+        reloadManageWindow(preferredProfileID: preferredProfileID)
+        guard let window = manageWindow else {
+            return
+        }
+
+        if !window.isVisible {
+            window.center()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func installReopenEventHandlerIfNeeded() {
+        guard !reopenHandlerInstalled else {
+            return
+        }
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleReopenAppleEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kCoreEventClass),
+            andEventID: AEEventID(kAEReopenApplication)
+        )
+        reopenHandlerInstalled = true
+    }
+
+    @objc private func handleReopenAppleEvent(_ event: NSAppleEventDescriptor, withReplyEvent replyEvent: NSAppleEventDescriptor) {
+        showManageWindow(preferredProfileID: nil)
+    }
+
     private func buildManageWindowIfNeeded() {
         if manageWindow != nil {
             return
@@ -1607,6 +1638,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.title = localizedString(en: "Manage Pins", zh: "管理 Pins")
+        window.isReleasedWhenClosed = false
+        window.hidesOnDeactivate = false
+        window.level = .floating
+        window.collectionBehavior = [.moveToActiveSpace]
         window.center()
 
         let content = NSView(frame: window.contentView?.bounds ?? .zero)
