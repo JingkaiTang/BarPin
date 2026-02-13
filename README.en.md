@@ -55,6 +55,24 @@ Run from Xcode or:
 swift run
 ```
 
+## Automated Testing
+
+### Logic Checks (CI-friendly)
+
+```bash
+swift run BarPinCoreChecks
+```
+
+### Local E2E (manage window reopen flow)
+
+```bash
+APP_PATH=dist/BarPin.app scripts/e2e_barpin.sh
+```
+
+Notes:
+- The script requires macOS Accessibility/Automation permissions for System Events.
+- It validates that reopening BarPin while running reliably brings up the management window.
+
 ## Structure
 
 - `Package.swift`: SwiftPM config

@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import BarPinCore
 import Carbon
 
 private enum DefaultsKeys {
@@ -1050,7 +1051,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if let conflict = profiles.first(where: { $0.id != profileID && $0.hotKey == newSetting }) {
+        let coreProfiles = profiles.map { profile in
+            PinCoreProfile(
+                id: profile.id,
+                bundleId: profile.bundleId,
+                hotKey: profile.hotKey.map { PinCoreHotKey(keyCode: $0.keyCode, modifiers: $0.modifiers) }
+            )
+        }
+        if let conflictCore = PinCore.hotKeyConflict(
+            setting: PinCoreHotKey(keyCode: newSetting.keyCode, modifiers: newSetting.modifiers),
+            profileID: profileID,
+            profiles: coreProfiles
+        ),
+           let conflict = profiles.first(where: { $0.id == conflictCore.id }) {
             showAlert(
                 title: localizedString(en: "Hotkey Conflict", zh: "快捷键冲突"),
                 message: localizedString(
@@ -1288,15 +1301,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func ensureUniqueProfilesByBundleID() {
-        var seen: Set<String> = []
-        var uniqueProfiles: [PinProfile] = []
-        for profile in profiles {
-            if seen.contains(profile.bundleId) {
-                continue
-            }
-            seen.insert(profile.bundleId)
-            uniqueProfiles.append(profile)
+        let coreProfiles = profiles.map { profile in
+            PinCoreProfile(
+                id: profile.id,
+                bundleId: profile.bundleId,
+                hotKey: profile.hotKey.map { PinCoreHotKey(keyCode: $0.keyCode, modifiers: $0.modifiers) }
+            )
         }
+        let dedupedIDs = Set(PinCore.deduplicatedProfilesByBundleID(coreProfiles).map(\.id))
+        let uniqueProfiles = profiles.filter { dedupedIDs.contains($0.id) }
         if uniqueProfiles != profiles {
             profiles = uniqueProfiles
             persistProfiles()

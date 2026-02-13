@@ -51,6 +51,24 @@ BarPin 依赖辅助功能（Accessibility）来控制外部窗口的移动、缩
 swift run
 ```
 
+## 自动化测试
+
+### 逻辑检查（可在 CI 跑）
+
+```bash
+swift run BarPinCoreChecks
+```
+
+### 本地 E2E（管理窗口重开链路）
+
+```bash
+APP_PATH=dist/BarPin.app scripts/e2e_barpin.sh
+```
+
+说明：
+- 该脚本依赖 macOS 辅助功能与自动化权限（System Events）。
+- 主要验证“BarPin 运行中再次打开 App 可拉起管理窗口”。
+
 ## 项目结构
 
 - `Package.swift`：SwiftPM 配置
