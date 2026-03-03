@@ -6,7 +6,7 @@ It turns frequently used apps into menu-bar-associated bubble entries: click to 
 
 Chinese version: [README.md](README.md)
 
-![BarPin Screenshot](assets/barpin-screenshot.png)
+![BarPin Demo](assets/录屏.gif)
 
 ## Features
 

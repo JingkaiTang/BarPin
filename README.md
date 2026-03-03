@@ -7,7 +7,7 @@ English version: [README.en.md](README.en.md)
 
 Slogan：你的摸鱼神器，把常用 App 固定在菜单栏气泡里。
 
-![BarPin 截图](assets/barpin-screenshot.png)
+![BarPin 演示](assets/录屏.gif)
 
 ## 功能特性
 
